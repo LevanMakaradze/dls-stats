@@ -238,7 +238,7 @@ film_stats = (
     )
     .reset_index()
 )
-film_stats["Std_Dev"] = film_stats["Std_Dev"].fillna(0)
+film_stats["Std_Dev"] = film_stats["Std_Dev"].fillna(0).round(2)
 
 # Per-user stats
 user_stats = (
@@ -429,24 +429,89 @@ with tab3:
 with tab4:
     st.header("Taste Compatibility & Most Controversial Films")
 
-    st.subheader("😤 Most Divisive Films (Highest Disagreement)")
-    st.caption("Films with the biggest spread in ratings among people who watched them.")
-    divisive = film_stats[film_stats["Rating_Count"] >= max(2, min(3, total_users))]
-    divisive = divisive.sort_values("Std_Dev", ascending=False).head(10)
-    fig_div = px.bar(
-        divisive, x="Std_Dev", y="film_name", orientation="h",
-        title="Standard Deviation of Ratings (Higher = More Disagreement)",
-        color="Std_Dev", color_continuous_scale=[ACCENT_2, ACCENT_3],
-    )
-    fig_div.update_layout(**PLOTLY_LAYOUT, yaxis_title="", xaxis_title="Std Dev")
-    st.plotly_chart(fig_div, use_container_width=True)
+    min_group_size = max(2, min(3, total_users))
+    eligible = film_stats[film_stats["Rating_Count"] >= min_group_size].copy()
+    eligible["Std_Dev"] = eligible["Std_Dev"].round(2)
+    eligible["Average_Rating"] = eligible["Average_Rating"].round(2)
+
+    c_div, c_agree = st.columns(2)
+
+    with c_div:
+        st.subheader("😤 Most Divisive Films (Highest Disagreement)")
+        st.caption("Films with the biggest spread in ratings among people who watched them.")
+        divisive = eligible.sort_values("Std_Dev", ascending=False).head(10)
+        fig_div = px.bar(
+            divisive, x="Std_Dev", y="film_name", orientation="h",
+            title="Standard Deviation of Ratings (Higher = More Disagreement)",
+            color="Std_Dev", color_continuous_scale=[ACCENT_2, ACCENT_3],
+        )
+        fig_div.update_layout(**PLOTLY_LAYOUT, yaxis_title="", xaxis_title="Std Dev")
+        fig_div.update_traces(hovertemplate="%{y}<br>Std Dev: %{x:.2f}<extra></extra>")
+        fig_div.update_xaxes(tickformat=".2f")
+        div_event = st.plotly_chart(
+            fig_div, use_container_width=True,
+            on_select="rerun", selection_mode="points", key="divisive_chart",
+        )
+
+    with c_agree:
+        st.subheader("🤗 Most Agreed-On Films (Lowest Disagreement)")
+        st.caption("Films the group is most in sync on — smallest spread in ratings.")
+        consensus = eligible.sort_values("Std_Dev", ascending=True).head(10)
+        fig_con = px.bar(
+            consensus, x="Std_Dev", y="film_name", orientation="h",
+            title="Standard Deviation of Ratings (Lower = More Agreement)",
+            color="Std_Dev", color_continuous_scale=[ACCENT, ACCENT_2],
+        )
+        fig_con.update_layout(**PLOTLY_LAYOUT, yaxis_title="", xaxis_title="Std Dev")
+        fig_con.update_traces(hovertemplate="%{y}<br>Std Dev: %{x:.2f}<extra></extra>")
+        fig_con.update_xaxes(tickformat=".2f")
+        con_event = st.plotly_chart(
+            fig_con, use_container_width=True,
+            on_select="rerun", selection_mode="points", key="consensus_chart",
+        )
+
+    # ---- Selected-movie rating breakdown (from either chart) ----
+    selected_film = None
+    for event, df_src in [(div_event, divisive), (con_event, consensus)]:
+        if event and event.get("selection", {}).get("points"):
+            point_index = event["selection"]["points"][0].get("point_index")
+            if point_index is not None and point_index < len(df_src):
+                selected_film = df_src.iloc[point_index]["film_name"]
+                break
+
+    st.divider()
+    if selected_film:
+        st.subheader(f"🎯 Ratings for: {selected_film}")
+        film_ratings = (
+            valid_ratings[valid_ratings["film_name"] == selected_film]
+            [["username", "rating"]]
+            .sort_values("rating", ascending=False)
+            .reset_index(drop=True)
+        )
+        film_ratings["rating"] = film_ratings["rating"].round(2)
+        c_chart, c_table = st.columns([2, 1])
+        with c_chart:
+            fig_person = px.bar(
+                film_ratings, x="username", y="rating",
+                title=f"Per-Member Rating — {selected_film}",
+                color="rating", color_continuous_scale=[ACCENT_3, ACCENT_2, ACCENT],
+                range_y=[0, 5],
+            )
+            fig_person.update_layout(**PLOTLY_LAYOUT, xaxis_title="", yaxis_title="Rating")
+            fig_person.update_traces(hovertemplate="%{x}<br>Rating: %{y:.2f}<extra></extra>")
+            fig_person.update_yaxes(tickformat=".2f")
+            st.plotly_chart(fig_person, use_container_width=True)
+        with c_table:
+            st.dataframe(film_ratings, use_container_width=True, hide_index=True)
+    else:
+        st.caption("👆 Click a bar in either chart above to see how each member rated that film.")
 
     st.divider()
     st.subheader("🤝 Member Taste Similarity")
     st.caption("Correlation between members' ratings on films they've both watched (needs overlapping films).")
     pivot = valid_ratings.pivot_table(index="film_name", columns="username", values="rating", aggfunc="mean")
     if pivot.shape[1] >= 2:
-        corr = pivot.corr(min_periods=2)
+        corr = pivot.corr(min_periods=2).round(2)
         fig_heat = px.imshow(
             corr, text_auto=".2f", aspect="auto",
             color_continuous_scale=[ACCENT_3, BG, ACCENT],
@@ -457,7 +522,7 @@ with tab4:
         st.plotly_chart(fig_heat, use_container_width=True)
     else:
         st.info("Need at least 2 members with overlapping ratings to compute similarity.")
-
+        
 # -----------------------------------------------------------------------
 # TAB 5 — MEMBERS
 # -----------------------------------------------------------------------
