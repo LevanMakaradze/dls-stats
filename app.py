@@ -589,7 +589,7 @@ with tab4:
             st.plotly_chart(fig_person, use_container_width=True)
         with c_table:
             st.dataframe(film_ratings.rename(columns={"username": "Username", "rating": "Rating"}),
-                         use_container_width=True, hide_index=True,height=800)
+                         use_container_width=True, hide_index=True, height=800)
 
     # ---- Fixed Tables: Complete Rating Breakdown for Divisive & Agreed-On Films ----
     st.divider()
@@ -607,7 +607,7 @@ with tab4:
         divisive_merged = divisive.merge(divisive_ratings, on="film_name", how="left")
         st.dataframe(
             divisive_merged[["film_name", "Std_Dev", "Ratings"]].rename(columns={"film_name": "Film", "Std_Dev": "Spread (StdDev)"}),
-            use_container_width=True, hide_index=True
+            use_container_width=True, hide_index=True, height=800
         )
 
     with col_con_tbl:
@@ -621,7 +621,7 @@ with tab4:
         consensus_merged = consensus.merge(consensus_ratings, on="film_name", how="left")
         st.dataframe(
             consensus_merged[["film_name", "Std_Dev", "Ratings"]].rename(columns={"film_name": "Film", "Std_Dev": "Spread (StdDev)"}),
-            use_container_width=True, hide_index=True
+            use_container_width=True, hide_index=True, height=800
         )
 
     # ---- Member Taste Similarity ----
