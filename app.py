@@ -556,7 +556,7 @@ with tab4:
             on_select="rerun", selection_mode="points", key="consensus_chart",
         )
 
-    # ---- Selected-movie rating breakdown (from either chart) ----
+    # ---- Selected-movie rating breakdown (from interactive click) ----
     selected_film = None
     for event, df_src in [(div_event, divisive), (con_event, consensus)]:
         if event and event.get("selection", {}).get("points"):
@@ -565,9 +565,8 @@ with tab4:
                 selected_film = df_src.iloc[point_index]["film_name"]
                 break
 
-    st.divider()
     if selected_film:
-        st.subheader(f"🎯 Ratings for: {selected_film}")
+        st.subheader(f"🎯 Individual Ratings for: {selected_film}")
         film_ratings = (
             valid_ratings[valid_ratings["film_name"] == selected_film]
             [["username", "rating"]]
@@ -591,26 +590,91 @@ with tab4:
         with c_table:
             st.dataframe(film_ratings.rename(columns={"username": "Username", "rating": "Rating"}),
                          use_container_width=True, hide_index=True)
-    else:
-        st.caption("👆 Click a bar in either chart above to see how each member rated that film.")
 
+    # ---- Fixed Tables: Complete Rating Breakdown for Divisive & Agreed-On Films ----
+    st.divider()
+    st.subheader("📋 Rating Breakdown for Divisive & Agreed-On Films")
+    
+    col_div_tbl, col_con_tbl = st.columns(2)
+    with col_div_tbl:
+        st.markdown("**Divisive Films — Member Ratings**")
+        divisive_ratings = (
+            valid_ratings[valid_ratings["film_name"].isin(divisive["film_name"])]
+            .groupby("film_name")
+            .agg(Ratings=("username", lambda u: ", ".join(f"{usr}: {r:.1f}⭐" for usr, r in zip(u, valid_ratings.loc[u.index, "rating"]))))
+            .reset_index()
+        )
+        divisive_merged = divisive.merge(divisive_ratings, on="film_name", how="left")
+        st.dataframe(
+            divisive_merged[["film_name", "Std_Dev", "Ratings"]].rename(columns={"film_name": "Film", "Std_Dev": "Spread (StdDev)"}),
+            use_container_width=True, hide_index=True
+        )
+
+    with col_con_tbl:
+        st.markdown("**Agreed-On Films — Member Ratings**")
+        consensus_ratings = (
+            valid_ratings[valid_ratings["film_name"].isin(consensus["film_name"])]
+            .groupby("film_name")
+            .agg(Ratings=("username", lambda u: ", ".join(f"{usr}: {r:.1f}⭐" for usr, r in zip(u, valid_ratings.loc[u.index, "rating"]))))
+            .reset_index()
+        )
+        consensus_merged = consensus.merge(consensus_ratings, on="film_name", how="left")
+        st.dataframe(
+            consensus_merged[["film_name", "Std_Dev", "Ratings"]].rename(columns={"film_name": "Film", "Std_Dev": "Spread (StdDev)"}),
+            use_container_width=True, hide_index=True
+        )
+
+    # ---- Member Taste Similarity ----
     st.divider()
     st.subheader("🤝 Member Taste Similarity")
-    st.caption("Correlation between members' ratings on films they've both watched (needs overlapping films).")
+    st.caption("Correlation between members' ratings on films they've both watched.")
+    
     pivot = valid_ratings.pivot_table(index="film_name", columns="username", values="rating", aggfunc="mean")
     if pivot.shape[1] >= 2:
         corr = pivot.corr(min_periods=2).round(2)
+
+        # Correlation Heatmap
         fig_heat = px.imshow(
             corr, text_auto=".2f", aspect="auto",
             color_continuous_scale=[ACCENT_3, BG, ACCENT],
             zmin=-1, zmax=1,
-            title="Rating Correlation Between Members",
+            title="Rating Correlation Heatmap",
         )
         fig_heat.update_layout(**PLOTLY_LAYOUT)
         st.plotly_chart(fig_heat, use_container_width=True)
+
+        # Build Sorted Pairwise Table
+        pairs = []
+        members = corr.columns.tolist()
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                m1, m2 = members[i], members[j]
+                val = corr.loc[m1, m2]
+                if pd.notna(val):
+                    # Count shared films
+                    shared = pivot[[m1, m2]].dropna().shape[0]
+                    pairs.append({"Member 1": m1, "Member 2": m2, "Similarity": val, "Shared Films": shared})
+
+        pairs_df = pd.DataFrame(pairs).sort_values("Similarity", ascending=False).reset_index(drop=True)
+
+        st.subheader("📊 All Member Pairings (Sorted by Similarity)")
+        
+        # User Filter Option
+        all_members = ["All Members"] + sorted(top_fours_df["username"].unique().tolist())
+        selected_filter_user = st.selectbox("Filter pairs by member:", all_members)
+
+        if selected_filter_user != "All Members":
+            filtered_pairs = pairs_df[
+                (pairs_df["Member 1"] == selected_filter_user) | (pairs_df["Member 2"] == selected_filter_user)
+            ]
+        else:
+            filtered_pairs = pairs_df
+
+        st.dataframe(filtered_pairs, use_container_width=True, hide_index=True)
+
     else:
         st.info("Need at least 2 members with overlapping ratings to compute similarity.")
-
+        
 # -----------------------------------------------------------------------
 # TAB 5 — MEMBERS
 # -----------------------------------------------------------------------
