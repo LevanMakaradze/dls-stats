@@ -547,6 +547,7 @@ with tab4:
             consensus, x="Std_Dev", y="film_name", orientation="h",
             title="Standard Deviation of Ratings (Lower = More Agreement)",
             color="Std_Dev", color_continuous_scale=[ACCENT, ACCENT_2],
+            height=2000,
         )
         fig_con.update_layout(**PLOTLY_LAYOUT, yaxis_title="", xaxis_title="Std Dev")
         fig_con.update_traces(hovertemplate="%{y}<br>Std Dev: %{x:.2f}<extra></extra>")
