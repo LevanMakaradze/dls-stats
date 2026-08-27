@@ -528,6 +528,7 @@ with tab4:
             divisive, x="Std_Dev", y="film_name", orientation="h",
             title="Standard Deviation of Ratings (Higher = More Disagreement)",
             color="Std_Dev", color_continuous_scale=[ACCENT_2, ACCENT_3],
+            height=2000,
         )
         fig_div.update_layout(**PLOTLY_LAYOUT, yaxis_title="", xaxis_title="Std Dev")
         fig_div.update_traces(hovertemplate="%{y}<br>Std Dev: %{x:.2f}<extra></extra>")
