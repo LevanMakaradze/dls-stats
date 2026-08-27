@@ -1,3 +1,4 @@
+import re
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -15,6 +16,7 @@ ACCENT_2 = "#40bcf4"    # letterboxd blue
 ACCENT_3 = "#ff8000"    # letterboxd orange
 BG = "#14181c"
 CARD = "#1c2228"
+BAR_LINE = "#0b0f12"
 
 st.markdown(f"""
     <style>
@@ -74,6 +76,18 @@ PLOTLY_LAYOUT = dict(
     margin=dict(l=10, r=10, t=50, b=10),
 )
 
+
+def add_bar_border(fig, width=1.5, color=BAR_LINE):
+    """Adds a visible border/outline to each bar/column in a plotly bar figure."""
+    fig.update_traces(marker_line_color=color, marker_line_width=width, selector=dict(type="bar"))
+    return fig
+
+
+def fmt2(fig_axis_update_fn, **kwargs):
+    """Small helper placeholder kept for readability at call sites (no-op wrapper)."""
+    return fig_axis_update_fn(**kwargs)
+
+
 # =============================================================================
 # DATA LOADING
 # =============================================================================
@@ -103,8 +117,17 @@ def fetch_movie_meta(movie_name):
     """
     Fetch poster + basic metadata from TMDB.
     Returns dict: poster_url, year, rating(tmdb), overview, tmdb_id, error
-    Supports BOTH v3 (?api_key=) and v4 (Bearer token) TMDB credentials,
-    which is the most common reason posters silently fail to load.
+
+    Supports BOTH v3 (?api_key=) and v4 (Bearer token) TMDB credentials.
+
+    Two fixes applied here for popular movies missing posters:
+      1. Letterboxd titles often look like "Movie Name (2013)" — the trailing
+         year is stripped out of the query string and instead passed as TMDB's
+         `year` filter, which greatly improves match accuracy for remakes/
+         sequels/common titles.
+      2. Instead of blindly taking the first search result, we prefer the
+         first result that actually HAS a poster_path, since TMDB sometimes
+         ranks a posterless placeholder/TV listing above the real movie.
     """
     result = {
         "poster_url": None, "year": None, "tmdb_rating": None,
@@ -115,9 +138,16 @@ def fetch_movie_meta(movie_name):
         result["error"] = "no_key"
         return result
 
+    # Split "Movie Name (2013)" -> title="Movie Name", year="2013"
+    m = re.match(r"^(.*?)\s*\((\d{4})\)\s*$", movie_name.strip())
+    query_title = m.group(1) if m else movie_name
+    query_year = m.group(2) if m else None
+
     search_url = "https://api.themoviedb.org/3/search/movie"
     headers = {}
-    params = {"query": movie_name}
+    params = {"query": query_title}
+    if query_year:
+        params["year"] = query_year
 
     if mode == "v4":
         headers["Authorization"] = f"Bearer {key}"
@@ -133,11 +163,21 @@ def fetch_movie_meta(movie_name):
         resp.raise_for_status()
         data = resp.json()
         results = data.get("results") or []
+
+        # Retry without the year filter if the strict search found nothing
+        if not results and query_year:
+            params.pop("year", None)
+            resp = requests.get(search_url, params=params, headers=headers, timeout=8)
+            resp.raise_for_status()
+            results = resp.json().get("results") or []
+
         if not results:
             result["error"] = "not_found"
             return result
 
-        best = results[0]
+        # Prefer the first result that actually has a poster image
+        best = next((r for r in results if r.get("poster_path")), results[0])
+
         poster_path = best.get("poster_path")
         if poster_path:
             result["poster_url"] = f"https://image.tmdb.org/t/p/w342{poster_path}"
@@ -200,34 +240,44 @@ with st.sidebar:
     show_posters_everywhere = st.toggle("Show posters in tables", value=True)
 
 # =============================================================================
-# CORE METRICS
+# CORE DATA MODEL — LOGGED vs RATED
 # =============================================================================
-total_users = top_fours_df["username"].nunique()
+# Every row in letterboxd_all_ratings.csv is a LOG. Some logs carry a numeric
+# star rating; others are the literal string "Unrated". Per project decision:
+#   LOGGED = every row (the primary / more important count — includes Unrated)
+#   RATED  = subset of logged rows where rating is a numeric value
+# This distinction is applied globally, everywhere counts are shown.
 ratings_df["rating"] = pd.to_numeric(ratings_df["rating"], errors="coerce")
-valid_ratings = ratings_df.dropna(subset=["rating"]).copy()
-total_logs = len(valid_ratings)
-unique_films = valid_ratings["film_name"].nunique()
+
+logged_df = ratings_df.copy()                       # LOGGED — all rows
+valid_ratings = ratings_df.dropna(subset=["rating"]).copy()  # RATED — numeric only
+
+total_users = top_fours_df["username"].nunique()
+total_logged = len(logged_df)
+total_rated = len(valid_ratings)
+unique_films_logged = logged_df["film_name"].nunique()
+unique_films_rated = valid_ratings["film_name"].nunique()
 avg_group_rating = valid_ratings["rating"].mean()
 
 # Optional watch-date based stats if column exists
-has_dates = "watched_date" in valid_ratings.columns or "date" in valid_ratings.columns
-date_col = "watched_date" if "watched_date" in valid_ratings.columns else (
-    "date" if "date" in valid_ratings.columns else None
+has_dates = "watched_date" in logged_df.columns or "date" in logged_df.columns
+date_col = "watched_date" if "watched_date" in logged_df.columns else (
+    "date" if "date" in logged_df.columns else None
 )
 if date_col:
-    valid_ratings["_parsed_date"] = pd.to_datetime(valid_ratings[date_col], errors="coerce")
-    has_dates = valid_ratings["_parsed_date"].notna().any()
+    logged_df["_parsed_date"] = pd.to_datetime(logged_df[date_col], errors="coerce")
+    has_dates = logged_df["_parsed_date"].notna().any()
 
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("👥 Members", total_users)
-col2.metric("📝 Total Ratings", f"{total_logs:,}")
-col3.metric("🎞️ Unique Films", f"{unique_films:,}")
-col4.metric("⭐ Group Avg Rating", f"{avg_group_rating:.2f} / 5")
-col5.metric("🔥 Logs per Member", f"{total_logs / max(total_users,1):.1f}")
+col2.metric("📝 Total Logged", f"{total_logged:,}")
+col3.metric("⭐ Total Rated", f"{total_rated:,}")
+col4.metric("🎯 Group Avg Rating", f"{avg_group_rating:.2f} / 5")
+col5.metric("🔥 Logs per Member", f"{total_logged / max(total_users, 1):.2f}")
 
 st.divider()
 
-# Pre-compute film-level stats
+# Pre-compute film-level stats (rating-based stats only ever come from RATED rows)
 film_stats = (
     valid_ratings.groupby("film_name")
     .agg(
@@ -238,19 +288,46 @@ film_stats = (
     )
     .reset_index()
 )
+film_stats["Average_Rating"] = film_stats["Average_Rating"].round(2)
 film_stats["Std_Dev"] = film_stats["Std_Dev"].fillna(0).round(2)
 
-# Per-user stats
-user_stats = (
-    valid_ratings.groupby("username")
-    .agg(
-        Films_Logged=("film_name", "count"),
-        Avg_Rating_Given=("rating", "mean"),
-        Harshness=("rating", "mean"),
-    )
+# Films-logged count per film (all logs, including Unrated)
+film_logged_counts = (
+    logged_df.groupby("film_name")
+    .agg(Logged_Count=("username", "count"))
     .reset_index()
-    .sort_values("Films_Logged", ascending=False)
 )
+
+# All members list — used to make sure every user shows up in per-user tables,
+# even members with zero logs or zero ratings (no filtering to "top N").
+all_users_df = pd.DataFrame({"username": sorted(top_fours_df["username"].unique())})
+
+# --- Per-user LOGGED stats (all users, unfiltered) ---
+user_logged_stats = (
+    logged_df.groupby("username")
+    .agg(Films_Logged=("film_name", "count"))
+    .reset_index()
+)
+user_logged_stats = all_users_df.merge(user_logged_stats, on="username", how="left")
+user_logged_stats["Films_Logged"] = user_logged_stats["Films_Logged"].fillna(0).astype(int)
+user_logged_stats = user_logged_stats.sort_values("Films_Logged", ascending=False).reset_index(drop=True)
+user_logged_stats = user_logged_stats.rename(columns={"username": "Username"})
+
+# --- Per-user RATED stats (all users, unfiltered) ---
+user_rated_stats = (
+    valid_ratings.groupby("username")
+    .agg(Films_Rated=("film_name", "count"), Avg_Rating_Given=("rating", "mean"))
+    .reset_index()
+)
+user_rated_stats = all_users_df.merge(user_rated_stats, on="username", how="left")
+user_rated_stats["Films_Rated"] = user_rated_stats["Films_Rated"].fillna(0).astype(int)
+user_rated_stats["Avg_Rating_Given"] = user_rated_stats["Avg_Rating_Given"].round(2)
+user_rated_stats = user_rated_stats.sort_values("Films_Rated", ascending=False).reset_index(drop=True)
+user_rated_stats = user_rated_stats.rename(columns={"username": "Username"})
+
+# Kept for the "harsh vs generous" chart, which is inherently rating-specific
+user_stats = user_rated_stats.rename(columns={"Films_Rated": "Films_Logged"}).copy()
+user_stats["Avg_Rating_Given"] = user_stats["Avg_Rating_Given"].fillna(0)
 
 # =============================================================================
 # TABS
@@ -278,37 +355,42 @@ with tab1:
             color_discrete_sequence=[ACCENT],
         )
         fig_hist.update_layout(**PLOTLY_LAYOUT, xaxis_title="Rating (out of 5)", yaxis_title="Number of Logs")
+        fig_hist.update_xaxes(tickformat=".2f")
+        add_bar_border(fig_hist)  # border around each column, as requested
         st.plotly_chart(fig_hist, use_container_width=True)
 
     with c2:
-        user_activity = valid_ratings["username"].value_counts().reset_index()
-        user_activity.columns = ["Username", "Movies Logged"]
+        user_activity = logged_df["username"].value_counts().reset_index()
+        user_activity.columns = ["Username", "Films Logged"]
         fig_bar = px.bar(
-            user_activity.head(15), x="Username", y="Movies Logged",
-            title="Most Active Members",
-            color="Movies Logged",
+            user_activity, x="Username", y="Films Logged",
+            title="Most Active Members (All, by Films Logged)",
+            color="Films Logged",
             color_continuous_scale=[ACCENT_2, ACCENT],
         )
         fig_bar.update_layout(**PLOTLY_LAYOUT)
+        add_bar_border(fig_bar)
         st.plotly_chart(fig_bar, use_container_width=True)
 
     c3, c4 = st.columns(2)
     with c3:
-        # Average rating given per user (who's harsh vs generous)
+        # Average rating given per user (who's harsh vs generous) — rating-based, so uses RATED data
         fig_avg = px.bar(
             user_stats.sort_values("Avg_Rating_Given"),
-            x="Avg_Rating_Given", y="username", orientation="h",
+            x="Avg_Rating_Given", y="Username", orientation="h",
             title="Average Rating Given, Per Member (Harsh → Generous)",
             color="Avg_Rating_Given",
             color_continuous_scale=[ACCENT_3, ACCENT_2, ACCENT],
         )
         fig_avg.update_layout(**PLOTLY_LAYOUT, xaxis_title="Avg Rating", yaxis_title="")
+        fig_avg.update_xaxes(tickformat=".2f")
+        add_bar_border(fig_avg)
         st.plotly_chart(fig_avg, use_container_width=True)
 
     with c4:
         if has_dates:
             timeline = (
-                valid_ratings.dropna(subset=["_parsed_date"])
+                logged_df.dropna(subset=["_parsed_date"])
                 .assign(month=lambda d: d["_parsed_date"].dt.to_period("M").astype(str))
                 .groupby("month").size().reset_index(name="Logs")
             )
@@ -320,16 +402,18 @@ with tab1:
             fig_time.update_layout(**PLOTLY_LAYOUT, xaxis_title="Month", yaxis_title="Logs")
             st.plotly_chart(fig_time, use_container_width=True)
         else:
-            # Fallback: rating count distribution per film (popularity curve)
-            pop_curve = film_stats["Rating_Count"].value_counts().sort_index().reset_index()
-            pop_curve.columns = ["Times Rated By N People", "Number of Films"]
-            fig_pop = px.bar(
-                pop_curve, x="Times Rated By N People", y="Number of Films",
-                title="Consensus Spread: How Many Films Are Shared?",
-                color_discrete_sequence=[ACCENT_2],
-            )
-            fig_pop.update_layout(**PLOTLY_LAYOUT)
-            st.plotly_chart(fig_pop, use_container_width=True)
+            # "How Many Films Are Shared?" stat removed per request.
+            st.info("No watch-date data available to show a logging timeline.")
+
+    st.divider()
+
+    st.subheader("📋 All Members — Logged")
+    st.caption("Every logged film, whether rated or not (Unrated logs included). All members shown, unfiltered.")
+    st.dataframe(user_logged_stats, use_container_width=True, hide_index=True)
+
+    st.subheader("📋 All Members — Rated")
+    st.caption("Only films given a numeric star rating. All members shown, unfiltered.")
+    st.dataframe(user_rated_stats, use_container_width=True, hide_index=True)
 
 # -----------------------------------------------------------------------
 # TAB 2 — TOP FOUR + POSTERS
@@ -375,9 +459,11 @@ with tab2:
                         unsafe_allow_html=True,
                     )
                     if meta.get("tmdb_rating"):
-                        st.caption(f"TMDB: {meta['tmdb_rating']:.1f}/10")
+                        st.caption(f"TMDB: {meta['tmdb_rating']:.2f}/10")
                     if meta.get("error") == "unauthorized":
                         st.caption("⚠️ Poster fetch failed: invalid TMDB key")
+                    elif meta.get("error") in ("not_found", "no_poster_on_record"):
+                        st.caption("⚠️ No poster found on TMDB for this title")
                     st.markdown("</div>", unsafe_allow_html=True)
                 idx += 1
 
@@ -431,8 +517,6 @@ with tab4:
 
     min_group_size = max(2, min(3, total_users))
     eligible = film_stats[film_stats["Rating_Count"] >= min_group_size].copy()
-    eligible["Std_Dev"] = eligible["Std_Dev"].round(2)
-    eligible["Average_Rating"] = eligible["Average_Rating"].round(2)
 
     c_div, c_agree = st.columns(2)
 
@@ -448,6 +532,7 @@ with tab4:
         fig_div.update_layout(**PLOTLY_LAYOUT, yaxis_title="", xaxis_title="Std Dev")
         fig_div.update_traces(hovertemplate="%{y}<br>Std Dev: %{x:.2f}<extra></extra>")
         fig_div.update_xaxes(tickformat=".2f")
+        add_bar_border(fig_div)
         div_event = st.plotly_chart(
             fig_div, use_container_width=True,
             on_select="rerun", selection_mode="points", key="divisive_chart",
@@ -465,6 +550,7 @@ with tab4:
         fig_con.update_layout(**PLOTLY_LAYOUT, yaxis_title="", xaxis_title="Std Dev")
         fig_con.update_traces(hovertemplate="%{y}<br>Std Dev: %{x:.2f}<extra></extra>")
         fig_con.update_xaxes(tickformat=".2f")
+        add_bar_border(fig_con)
         con_event = st.plotly_chart(
             fig_con, use_container_width=True,
             on_select="rerun", selection_mode="points", key="consensus_chart",
@@ -500,9 +586,11 @@ with tab4:
             fig_person.update_layout(**PLOTLY_LAYOUT, xaxis_title="", yaxis_title="Rating")
             fig_person.update_traces(hovertemplate="%{x}<br>Rating: %{y:.2f}<extra></extra>")
             fig_person.update_yaxes(tickformat=".2f")
+            add_bar_border(fig_person)
             st.plotly_chart(fig_person, use_container_width=True)
         with c_table:
-            st.dataframe(film_ratings, use_container_width=True, hide_index=True)
+            st.dataframe(film_ratings.rename(columns={"username": "Username", "rating": "Rating"}),
+                         use_container_width=True, hide_index=True)
     else:
         st.caption("👆 Click a bar in either chart above to see how each member rated that film.")
 
@@ -522,7 +610,7 @@ with tab4:
         st.plotly_chart(fig_heat, use_container_width=True)
     else:
         st.info("Need at least 2 members with overlapping ratings to compute similarity.")
-        
+
 # -----------------------------------------------------------------------
 # TAB 5 — MEMBERS
 # -----------------------------------------------------------------------
@@ -530,14 +618,15 @@ with tab5:
     st.header("Member Profiles")
     selected_user = st.selectbox("Choose a member", sorted(top_fours_df["username"].unique()))
 
-    user_ratings = valid_ratings[valid_ratings["username"] == selected_user]
-    u_row = user_stats[user_stats["username"] == selected_user].iloc[0] if not user_stats[user_stats["username"] == selected_user].empty else None
+    user_logged = logged_df[logged_df["username"] == selected_user]
+    user_rated = valid_ratings[valid_ratings["username"] == selected_user]
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Films Logged", len(user_ratings))
-    m2.metric("Avg Rating Given", f"{user_ratings['rating'].mean():.2f}" if len(user_ratings) else "—")
-    rank = (user_stats["username"] == selected_user).idxmax() + 1 if not user_stats.empty else "—"
-    m3.metric("Activity Rank", f"#{list(user_stats['username']).index(selected_user)+1 if selected_user in list(user_stats['username']) else '—'}")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Films Logged", len(user_logged))
+    m2.metric("Films Rated", len(user_rated))
+    m3.metric("Avg Rating Given", f"{user_rated['rating'].mean():.2f}" if len(user_rated) else "—")
+    rank_list = list(user_logged_stats["Username"])
+    m4.metric("Activity Rank (Logged)", f"#{rank_list.index(selected_user) + 1}" if selected_user in rank_list else "—")
 
     st.subheader("🏅 Their Top Four")
     tf_row = top_fours_df[top_fours_df["username"] == selected_user]
@@ -552,18 +641,25 @@ with tab5:
                 st.caption(movie)
 
     st.subheader("📈 Their Rating Distribution")
-    if len(user_ratings):
+    if len(user_rated):
         fig_u = px.histogram(
-            user_ratings, x="rating", nbins=10,
+            user_rated, x="rating", nbins=10,
             color_discrete_sequence=[ACCENT_2],
             title=f"{selected_user}'s Rating Habits",
         )
         fig_u.update_layout(**PLOTLY_LAYOUT)
+        fig_u.update_xaxes(tickformat=".2f")
+        add_bar_border(fig_u)
         st.plotly_chart(fig_u, use_container_width=True)
 
     st.subheader("🎞️ All Their Logged Films")
+    st.caption("Includes Unrated logs.")
+    display_logged = user_logged[["film_name", "rating"]].copy()
+    display_logged["rating"] = display_logged["rating"].round(2)
+    display_logged = display_logged.rename(columns={"film_name": "Film", "rating": "Rating"})
+    display_logged["Rating"] = display_logged["Rating"].apply(lambda x: x if pd.notna(x) else "Unrated")
     st.dataframe(
-        user_ratings[["film_name", "rating"]].sort_values("rating", ascending=False),
+        display_logged.sort_values("Rating", ascending=False, key=lambda s: pd.to_numeric(s, errors="coerce")),
         use_container_width=True, hide_index=True,
     )
 
@@ -574,7 +670,11 @@ with tab6:
     st.header("Search Any Film or Member")
     search_query = st.text_input("🔍 Type a film title or username:")
 
-    search_df = film_stats.copy()
+    search_df = film_stats.merge(film_logged_counts, on="film_name", how="left")
+    search_df["Logged_Count"] = search_df["Logged_Count"].fillna(0).astype(int)
+    search_df["Average_Rating"] = search_df["Average_Rating"].round(2)
+    search_df["Std_Dev"] = search_df["Std_Dev"].round(2)
+
     if search_query:
         search_df = search_df[
             search_df["film_name"].str.contains(search_query, case=False, na=False)
@@ -597,5 +697,7 @@ with tab6:
                 st.caption(meta["overview"][:280] + ("…" if len(meta["overview"]) > 280 else ""))
             if meta.get("error") == "unauthorized":
                 st.error("TMDB key rejected (401). Check key type in sidebar diagnostics.")
+            elif meta.get("error") in ("not_found", "no_poster_on_record"):
+                st.warning("No poster found on TMDB for this title.")
         elif search_query:
             st.warning("No matches found.")
