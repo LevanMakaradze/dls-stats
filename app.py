@@ -523,7 +523,7 @@ with tab4:
     with c_div:
         st.subheader("😤 Most Divisive Films (Highest Disagreement)")
         st.caption("Films with the biggest spread in ratings among people who watched them.")
-        divisive = eligible.sort_values("Std_Dev", ascending=False).head(10)
+        divisive = eligible.sort_values("Std_Dev", ascending=False).head(50)
         fig_div = px.bar(
             divisive, x="Std_Dev", y="film_name", orientation="h",
             title="Standard Deviation of Ratings (Higher = More Disagreement)",
@@ -541,7 +541,7 @@ with tab4:
     with c_agree:
         st.subheader("🤗 Most Agreed-On Films (Lowest Disagreement)")
         st.caption("Films the group is most in sync on — smallest spread in ratings.")
-        consensus = eligible.sort_values("Std_Dev", ascending=True).head(10)
+        consensus = eligible.sort_values("Std_Dev", ascending=True).head(50)
         fig_con = px.bar(
             consensus, x="Std_Dev", y="film_name", orientation="h",
             title="Standard Deviation of Ratings (Lower = More Agreement)",
