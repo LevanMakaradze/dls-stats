@@ -509,174 +509,255 @@ with tab3:
                 st.markdown(f"**{row['film_name']}** — ⭐ {row['Average_Rating']:.2f} ({int(row['Rating_Count'])} ratings)")
                 st.caption(f"Rated by: {row['Rated_By']}")
 
-# -----------------------------------------------------------------------
+# =============================================================================
 # TAB 4 — TASTE & CONTROVERSY
-# -----------------------------------------------------------------------
+# =============================================================================
 with tab4:
     st.header("Taste Compatibility & Most Controversial Films")
 
-    min_group_size = max(2, min(3, total_users))
-    eligible = film_stats[film_stats["Rating_Count"] >= min_group_size].copy()
+    # Minimum ratings filter
+    min_ratings_filter = st.slider(
+        "Minimum number of member ratings required for films:",
+        min_value=1,
+        max_value=total_users,
+        value=max(2, min(3, total_users)),
+        key="tc_min_ratings"
+    )
 
-    c_div, c_agree = st.columns(2)
+    # Filter films based on the minimum rating count threshold
+    eligible = film_stats[film_stats["Rating_Count"] >= min_ratings_filter].copy()
 
-    with c_div:
-        st.subheader("😤 Most Divisive Films (Highest Disagreement)")
-        st.caption("Films with the biggest spread in ratings among people who watched them.")
-        divisive = eligible.sort_values("Std_Dev", ascending=False).head(100)
-        fig_div = px.bar(
-            divisive, x="Std_Dev", y="film_name", orientation="h",
-            title="Standard Deviation of Ratings (Higher = More Disagreement)",
-            color="Std_Dev", color_continuous_scale=[ACCENT_2, ACCENT_3],
-            height=2000,
-        )
-        fig_div.update_layout(**PLOTLY_LAYOUT, yaxis_title="", xaxis_title="Std Dev")
-        fig_div.update_traces(hovertemplate="%{y}<br>Std Dev: %{x:.2f}<extra></extra>")
-        fig_div.update_xaxes(tickformat=".2f")
-        add_bar_border(fig_div)
-        div_event = st.plotly_chart(
-            fig_div, use_container_width=True,
-            on_select="rerun", selection_mode="points", key="divisive_chart",
-        )
+    if eligible.empty:
+        st.warning("No films match the selected minimum ratings filter.")
+    else:
+        c_div, c_agree = st.columns(2)
 
-    with c_agree:
-        st.subheader("🤗 Most Agreed-On Films (Lowest Disagreement)")
-        st.caption("Films the group is most in sync on — smallest spread in ratings.")
-        consensus = eligible.sort_values("Std_Dev", ascending=True).head(100)
-        fig_con = px.bar(
-            consensus, x="Std_Dev", y="film_name", orientation="h",
-            title="Standard Deviation of Ratings (Lower = More Agreement)",
-            color="Std_Dev", color_continuous_scale=[ACCENT, ACCENT_2],
-            height=2000,
-        )
-        fig_con.update_layout(**PLOTLY_LAYOUT, yaxis_title="", xaxis_title="Std Dev")
-        fig_con.update_traces(hovertemplate="%{y}<br>Std Dev: %{x:.2f}<extra></extra>")
-        fig_con.update_xaxes(tickformat=".2f")
-        add_bar_border(fig_con)
-        con_event = st.plotly_chart(
-            fig_con, use_container_width=True,
-            on_select="rerun", selection_mode="points", key="consensus_chart",
-        )
-
-    # ---- Selected-movie rating breakdown (from interactive click) ----
-    selected_film = None
-    for event, df_src in [(div_event, divisive), (con_event, consensus)]:
-        if event and event.get("selection", {}).get("points"):
-            point_index = event["selection"]["points"][0].get("point_index")
-            if point_index is not None and point_index < len(df_src):
-                selected_film = df_src.iloc[point_index]["film_name"]
-                break
-
-    if selected_film:
-        st.subheader(f"🎯 Individual Ratings for: {selected_film}")
-        film_ratings = (
-            valid_ratings[valid_ratings["film_name"] == selected_film]
-            [["username", "rating"]]
-            .sort_values("rating", ascending=False)
-            .reset_index(drop=True)
-        )
-        film_ratings["rating"] = film_ratings["rating"].round(2)
-        c_chart, c_table = st.columns([2, 1])
-        with c_chart:
-            fig_person = px.bar(
-                film_ratings, x="username", y="rating",
-                title=f"Per-Member Rating — {selected_film}",
-                color="rating", color_continuous_scale=[ACCENT_3, ACCENT_2, ACCENT],
-                range_y=[0, 5],
+        with c_div:
+            st.subheader("😤 Most Divisive Films (Highest Disagreement)")
+            st.caption("Films with the biggest spread in ratings among members.")
+            divisive = eligible.sort_values("Std_Dev", ascending=False).head(100)
+            fig_div = px.bar(
+                divisive, x="Std_Dev", y="film_name", orientation="h",
+                title="Standard Deviation of Ratings",
+                color="Std_Dev", color_continuous_scale=[ACCENT_2, ACCENT_3],
+                hover_data={"Rating_Count": True},
+                height=2000,
             )
-            fig_person.update_layout(**PLOTLY_LAYOUT, xaxis_title="", yaxis_title="Rating")
-            fig_person.update_traces(hovertemplate="%{x}<br>Rating: %{y:.2f}<extra></extra>")
-            fig_person.update_yaxes(tickformat=".2f")
-            add_bar_border(fig_person)
-            st.plotly_chart(fig_person, use_container_width=True)
-        with c_table:
-            st.dataframe(film_ratings.rename(columns={"username": "Username", "rating": "Rating"}),
-                         use_container_width=True, hide_index=True, height=800)
+            fig_div.update_layout(**PLOTLY_LAYOUT, yaxis_title="", xaxis_title="Std Dev")
+            fig_div.update_traces(hovertemplate="%{y}<br>Std Dev: %{x:.2f}<br>Ratings Count: %{customdata[0]}<extra></extra>")
+            fig_div.update_xaxes(tickformat=".2f")
+            add_bar_border(fig_div)
+            div_event = st.plotly_chart(
+                fig_div, use_container_width=True,
+                on_select="rerun", selection_mode="points", key="divisive_chart",
+            )
 
-    # ---- Fixed Tables: Complete Rating Breakdown for Divisive & Agreed-On Films ----
-    st.divider()
-    st.subheader("📋 Rating Breakdown for Divisive & Agreed-On Films")
-    
-    col_div_tbl, col_con_tbl = st.columns(2)
-    with col_div_tbl:
-        st.markdown("**Divisive Films — Member Ratings**")
-        divisive_ratings = (
-            valid_ratings[valid_ratings["film_name"].isin(divisive["film_name"])]
-            .groupby("film_name")
-            .agg(Ratings=("username", lambda u: ", ".join(f"{usr}: {r:.1f}⭐" for usr, r in zip(u, valid_ratings.loc[u.index, "rating"]))))
-            .reset_index()
-        )
-        divisive_merged = divisive.merge(divisive_ratings, on="film_name", how="left")
-        st.dataframe(
-            divisive_merged[["film_name", "Std_Dev", "Ratings"]].rename(columns={"film_name": "Film", "Std_Dev": "Spread (StdDev)"}),
-            use_container_width=True, hide_index=True, height=800
-        )
+        with c_agree:
+            st.subheader("🤗 Most Agreed-On Films (Lowest Disagreement)")
+            st.caption("Films the group is most in sync on.")
+            consensus = eligible.sort_values("Std_Dev", ascending=True).head(100)
+            fig_con = px.bar(
+                consensus, x="Std_Dev", y="film_name", orientation="h",
+                title="Standard Deviation of Ratings",
+                color="Std_Dev", color_continuous_scale=[ACCENT, ACCENT_2],
+                hover_data={"Rating_Count": True},
+                height=2000,
+            )
+            fig_con.update_layout(**PLOTLY_LAYOUT, yaxis_title="", xaxis_title="Std Dev")
+            fig_con.update_traces(hovertemplate="%{y}<br>Std Dev: %{x:.2f}<br>Ratings Count: %{customdata[0]}<extra></extra>")
+            fig_con.update_xaxes(tickformat=".2f")
+            add_bar_border(fig_con)
+            con_event = st.plotly_chart(
+                fig_con, use_container_width=True,
+                on_select="rerun", selection_mode="points", key="consensus_chart",
+            )
 
-    with col_con_tbl:
-        st.markdown("**Agreed-On Films — Member Ratings**")
-        consensus_ratings = (
-            valid_ratings[valid_ratings["film_name"].isin(consensus["film_name"])]
-            .groupby("film_name")
-            .agg(Ratings=("username", lambda u: ", ".join(f"{usr}: {r:.1f}⭐" for usr, r in zip(u, valid_ratings.loc[u.index, "rating"]))))
-            .reset_index()
-        )
-        consensus_merged = consensus.merge(consensus_ratings, on="film_name", how="left")
-        st.dataframe(
-            consensus_merged[["film_name", "Std_Dev", "Ratings"]].rename(columns={"film_name": "Film", "Std_Dev": "Spread (StdDev)"}),
-            use_container_width=True, hide_index=True, height=800
-        )
+        # ---- Interactive breakdown on selection ----
+        selected_film = None
+        for event, df_src in [(div_event, divisive), (con_event, consensus)]:
+            if event and event.get("selection", {}).get("points"):
+                point_index = event["selection"]["points"][0].get("point_index")
+                if point_index is not None and point_index < len(df_src):
+                    selected_film = df_src.iloc[point_index]["film_name"]
+                    break
+
+        if selected_film:
+            st.subheader(f"🎯 Individual Ratings for: {selected_film}")
+            film_ratings = (
+                valid_ratings[valid_ratings["film_name"] == selected_film]
+                [["username", "rating"]]
+                .sort_values("rating", ascending=False)
+                .reset_index(drop=True)
+            )
+            film_ratings["rating"] = film_ratings["rating"].round(2)
+            c_chart, c_table = st.columns([2, 1])
+            with c_chart:
+                fig_person = px.bar(
+                    film_ratings, x="username", y="rating",
+                    title=f"Per-Member Rating — {selected_film}",
+                    color="rating", color_continuous_scale=[ACCENT_3, ACCENT_2, ACCENT],
+                    range_y=[0, 5],
+                )
+                fig_person.update_layout(**PLOTLY_LAYOUT, xaxis_title="", yaxis_title="Rating")
+                fig_person.update_traces(hovertemplate="%{x}<br>Rating: %{y:.2f}<extra></extra>")
+                fig_person.update_yaxes(tickformat=".2f")
+                add_bar_border(fig_person)
+                st.plotly_chart(fig_person, use_container_width=True)
+            with c_table:
+                st.dataframe(film_ratings.rename(columns={"username": "Username", "rating": "Rating"}),
+                             use_container_width=True, hide_index=True, height=800)
+
+        # ---- Tables with explicit Rating_Count inclusion ----
+        st.divider()
+        st.subheader("📋 Rating Breakdown for Divisive & Agreed-On Films")
+        
+        col_div_tbl, col_con_tbl = st.columns(2)
+        with col_div_tbl:
+            st.markdown("**Divisive Films — Member Ratings**")
+            divisive_ratings = (
+                valid_ratings[valid_ratings["film_name"].isin(divisive["film_name"])]
+                .groupby("film_name")
+                .agg(Ratings=("username", lambda u: ", ".join(f"{usr}: {r:.1f}⭐" for usr, r in zip(u, valid_ratings.loc[u.index, "rating"]))))
+                .reset_index()
+            )
+            divisive_merged = divisive.merge(divisive_ratings, on="film_name", how="left")
+            st.dataframe(
+                divisive_merged[["film_name", "Rating_Count", "Std_Dev", "Ratings"]].rename(
+                    columns={"film_name": "Film", "Rating_Count": "Ratings Count", "Std_Dev": "Spread (StdDev)"}
+                ),
+                use_container_width=True, hide_index=True, height=800
+            )
+
+        with col_con_tbl:
+            st.markdown("**Agreed-On Films — Member Ratings**")
+            consensus_ratings = (
+                valid_ratings[valid_ratings["film_name"].isin(consensus["film_name"])]
+                .groupby("film_name")
+                .agg(Ratings=("username", lambda u: ", ".join(f"{usr}: {r:.1f}⭐" for usr, r in zip(u, valid_ratings.loc[u.index, "rating"]))))
+                .reset_index()
+            )
+            consensus_merged = consensus.merge(consensus_ratings, on="film_name", how="left")
+            st.dataframe(
+                consensus_merged[["film_name", "Rating_Count", "Std_Dev", "Ratings"]].rename(
+                    columns={"film_name": "Film", "Rating_Count": "Ratings Count", "Std_Dev": "Spread (StdDev)"}
+                ),
+                use_container_width=True, hide_index=True, height=800
+            )
 
     # ---- Member Taste Similarity ----
     st.divider()
     st.subheader("🤝 Member Taste Similarity")
-    st.caption("Correlation between members' ratings on films they've both watched.")
+    st.caption("Adjusted Cosine Similarity (centering member mean ratings) on overlapping films.")
     
     pivot = valid_ratings.pivot_table(index="film_name", columns="username", values="rating", aggfunc="mean")
-    if pivot.shape[1] >= 2:
-        corr = pivot.corr(min_periods=2).round(2)
+    
+    # Calculate Mean-Centered Pearson/Adjusted Cosine Similarity
+    user_means = pivot.mean(axis=0)
+    pivot_centered = pivot.sub(user_means, axis=1)
 
-        # Correlation Heatmap
+    members = pivot.columns.tolist()
+    min_overlap = st.slider("Minimum shared films required to calculate similarity:", 1, 20, 3)
+
+    sim_matrix = pd.DataFrame(index=members, columns=members, dtype=float)
+    pairs = []
+
+    for i in range(len(members)):
+        for j in range(len(members)):
+            m1, m2 = members[i], members[j]
+            if i == j:
+                sim_matrix.loc[m1, m2] = 1.0
+                continue
+            
+            shared_mask = pivot[m1].notna() & pivot[m2].notna()
+            shared_count = shared_mask.sum()
+
+            if shared_count >= min_overlap:
+                u1 = pivot_centered.loc[shared_mask, m1]
+                u2 = pivot_centered.loc[shared_mask, m2]
+
+                denom = np.sqrt(np.sum(u1**2)) * np.sqrt(np.sum(u2**2))
+                if denom != 0:
+                    score = np.dot(u1, u2) / denom
+                else:
+                    score = 0.0
+                
+                sim_matrix.loc[m1, m2] = round(score, 2)
+                if i < j:
+                    pairs.append({"Member 1": m1, "Member 2": m2, "Similarity": round(score, 2), "Shared Films": shared_count})
+            else:
+                sim_matrix.loc[m1, m2] = np.nan
+
+    if pivot.shape[1] >= 2:
         fig_heat = px.imshow(
-            corr, text_auto=".2f", aspect="auto",
+            sim_matrix.astype(float), text_auto=".2f", aspect="auto",
             color_continuous_scale=[ACCENT_3, BG, ACCENT],
             zmin=-1, zmax=1,
-            title="Rating Correlation Heatmap",
+            title="Adjusted Cosine Similarity Matrix",
         )
         fig_heat.update_layout(**PLOTLY_LAYOUT)
         st.plotly_chart(fig_heat, use_container_width=True)
 
-        # Build Sorted Pairwise Table
-        pairs = []
-        members = corr.columns.tolist()
-        for i in range(len(members)):
-            for j in range(i + 1, len(members)):
-                m1, m2 = members[i], members[j]
-                val = corr.loc[m1, m2]
-                if pd.notna(val):
-                    # Count shared films
-                    shared = pivot[[m1, m2]].dropna().shape[0]
-                    pairs.append({"Member 1": m1, "Member 2": m2, "Similarity": val, "Shared Films": shared})
+        pairs_df = pd.DataFrame(pairs)
+        if not pairs_df.empty:
+            pairs_df = pairs_df.sort_values("Similarity", ascending=False).reset_index(drop=True)
+            st.subheader("📊 Member Pairings (Sorted by Similarity)")
+            all_members = ["All Members"] + sorted(members)
+            selected_filter_user = st.selectbox("Filter pairs by member:", all_members)
 
-        pairs_df = pd.DataFrame(pairs).sort_values("Similarity", ascending=False).reset_index(drop=True)
-
-        st.subheader("📊 All Member Pairings (Sorted by Similarity)")
-        
-        # User Filter Option
-        all_members = ["All Members"] + sorted(top_fours_df["username"].unique().tolist())
-        selected_filter_user = st.selectbox("Filter pairs by member:", all_members)
-
-        if selected_filter_user != "All Members":
-            filtered_pairs = pairs_df[
-                (pairs_df["Member 1"] == selected_filter_user) | (pairs_df["Member 2"] == selected_filter_user)
-            ]
+            if selected_filter_user != "All Members":
+                filtered_pairs = pairs_df[
+                    (pairs_df["Member 1"] == selected_filter_user) | (pairs_df["Member 2"] == selected_filter_user)
+                ]
+            else:
+                filtered_pairs = pairs_df
+            st.dataframe(filtered_pairs, use_container_width=True, hide_index=True)
         else:
-            filtered_pairs = pairs_df
-
-        st.dataframe(filtered_pairs, use_container_width=True, hide_index=True)
-
+            st.info("No member pairs meet the minimum shared films threshold.")
     else:
         st.info("Need at least 2 members with overlapping ratings to compute similarity.")
+
+    # ---- NEW STATS SECTION ----
+    st.divider()
+    st.subheader("⚡ Group Dynamics & Hot Takes")
+
+    # 1. Taste Rivals & Soulmates
+    if pivot.shape[1] >= 2 and 'pairs_df' in locals() and not pairs_df.empty:
+        st.markdown("**👯 Film Twins & Rivals**")
+        twin_col, rival_col = st.columns(2)
+        top_pair = pairs_df.iloc[0]
+        bottom_pair = pairs_df.iloc[-1]
         
+        with twin_col:
+            st.success(f"**Film Twins:** {top_pair['Member 1']} & {top_pair['Member 2']} (Score: {top_pair['Similarity']:.2f}, {top_pair['Shared Films']} shared films)")
+        with rival_col:
+            st.error(f"**Film Rivals:** {bottom_pair['Member 1']} & {bottom_pair['Member 2']} (Score: {bottom_pair['Similarity']:.2f}, {bottom_pair['Shared Films']} shared films)")
+
+    # 2. Hot Take Leaders (Contrarians)
+    st.markdown("**🔥 Group Contrarians (Highest Deviation from Group Means)**")
+    ratings_with_means = valid_ratings.merge(
+        film_stats[["film_name", "Average_Rating", "Rating_Count"]],
+        on="film_name"
+    )
+    # Only evaluate takes on movies rated by at least 2 people
+    multi_rated_takes = ratings_with_means[ratings_with_means["Rating_Count"] >= 2].copy()
+    multi_rated_takes["Deviation"] = (multi_rated_takes["rating"] - multi_rated_takes["Average_Rating"]).abs()
+
+    user_contrarian_scores = (
+        multi_rated_takes.groupby("username")
+        .agg(Avg_Deviation=("Deviation", "mean"), Rated_Shared_Count=("Deviation", "count"))
+        .reset_index()
+        .sort_values("Avg_Deviation", ascending=False)
+    )
+    user_contrarian_scores["Avg_Deviation"] = user_contrarian_scores["Avg_Deviation"].round(2)
+    user_contrarian_scores = user_contrarian_scores.rename(
+        columns={"username": "Username", "Avg_Deviation": "Average Rating Deviation", "Rated_Shared_Count": "Shared Films Rated"}
+    )
+    st.dataframe(user_contrarian_scores, use_container_width=True, hide_index=True)
+
+    # 3. Overall Group Harmony Metric
+    overall_avg_std = eligible["Std_Dev"].mean()
+    st.metric("🎯 Group Harmony Index", f"{overall_avg_std:.2f} Avg StdDev", delta="Lower = More In-Sync", delta_color="inverse")
+           
 # -----------------------------------------------------------------------
 # TAB 5 — MEMBERS
 # -----------------------------------------------------------------------
@@ -767,3 +848,4 @@ with tab6:
                 st.warning("No poster found on TMDB for this title.")
         elif search_query:
             st.warning("No matches found.")
+            
